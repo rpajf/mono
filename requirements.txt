@@ -1,0 +1,4 @@
+gdeltdoc
+pandas
+feedparser
+kagglehub
