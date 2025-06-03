@@ -1,16 +1,19 @@
 import kagglehub
 import zipfile
 import json
+import csv
 from collections import Counter, defaultdict
 import os
 from etl import ETLProcessor
+from batch_utils import divide_into_batches
 
 # Download the latest version of the dataset
 # path = kagglehub.dataset_download("allen-institute-for-ai/CORD-19-research-challenge")
 
 
 # Path to the zip file
-zip_path = "/Users/raphaelportela/Downloads/allen-ai.zip"
+# zip_path = "./allen-ai.zip"
+zip_path = "./data/allen-ai.zip"
 target_file = "document_parses/pmc_json/PMC9146536.xml.json"
 
 def is_text_file(filename):
@@ -83,11 +86,55 @@ with zipfile.ZipFile(zip_path, "r") as zip_ref:
     else:
         print(f"{target_file} not found in the zip archive.")
 
-if __name__ == "__main__":
-    # Get all .json article files from the zip
-    article_files = [f for f in file_list if f.endswith('.json')]
-    etl = ETLProcessor(article_files)
+    # Extract all JSON files
+    json_files = [f for f in file_list if f.endswith('.json')]
+    etl = ETLProcessor(json_files)
     etl.run()
+
+    # Extract key fields from each paper and write to CSV
+    def extract_cord19_fields(data):
+        paper_id = data.get("paper_id")
+        title = data.get("metadata", {}).get("title")
+        authors = data.get("metadata", {}).get("authors", [])
+        author_names = [f"{a.get('first', '')} {a.get('last', '')}".strip() for a in authors]
+        abstract_list = data.get("abstract", [])
+        abstract_text = " ".join([a.get("text", "") for a in abstract_list])
+        body_text = " ".join([b.get("text", "") for b in data.get("body_text", [])])
+        return {
+            "paper_id": paper_id,
+            "title": title,
+            "authors": "; ".join(author_names),
+            "abstract": abstract_text,
+            "body_text": body_text
+        }
+
+    BATCH_SIZE_MB = 100
+    BATCH_SIZE_BYTES = BATCH_SIZE_MB * 1024 * 1024
+
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        file_list = [f for f in zip_ref.namelist() if f.endswith('.json')]
+        file_infos = [{'name': f, 'size': zip_ref.getinfo(f).file_size} for f in file_list]
+
+        batches = divide_into_batches(file_infos, BATCH_SIZE_BYTES)
+
+        for batch_num, batch in enumerate(batches, 1):
+            rows = []
+            for info in batch:
+                with zip_ref.open(info['name']) as f:
+                    try:
+                        data = json.load(f)
+                        extracted = extract_cord19_fields(data)
+                        rows.append(extracted)
+                    except Exception as e:
+                        print(f"Error processing {info['name']}: {e}")
+            # Write batch to CSV
+            csv_filename = f"batch_{batch_num}.csv"
+            with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ["paper_id", "title", "authors", "abstract", "body_text"]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            print(f"Wrote {csv_filename} with {len(rows)} records.")
 
 # def run(self):
 #     print("ETL process started. This is a placeholder for your ETL logic.")
